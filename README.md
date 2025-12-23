@@ -1,361 +1,121 @@
 <p align="center">
-  <img src="docs/images/logo.svg" alt="AI-Higress logo" width="600" />
+  <img src="docs/images/logo.svg" alt="AI Bridge logo" width="420" />
 </p>
 
-<div align="center">
-
-[![Release](https://img.shields.io/github/v/release/MarshallEriksen-Neura/AI-Higress-Gateway?label=release&style=flat-square)](https://github.com/MarshallEriksen-Neura/AI-Higress-Gateway/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/MarshallEriksen-Neura/AI-Higress-Gateway/backend.yml?branch=main&style=flat-square)](https://github.com/MarshallEriksen-Neura/AI-Higress-Gateway/actions)
-[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/MarshallEriksen-Neura/AI-Higress-Gateway/blob/main/LICENSE)
-[![Stars](https://img.shields.io/github/stars/MarshallEriksen-Neura/AI-Higress-Gateway?style=flat-square)](https://github.com/MarshallEriksen-Neura/AI-Higress-Gateway/stargazers)
-
-</div>
-
-<h1 align="center">AI-Higress-Gateway</h1>
-
-<p align="center"><em>Production-grade AI gateway: OpenAI-compatible API, multi-provider routing, front/back dashboards, caching, and failover.</em></p>
-
-[English](#english-overview) · [中文](#中文概览)
+<h1 align="center">AI Bridge · MCP 隧道网关</h1>
+<p align="center"><em>让 Web/云端安全调用本地/内网 MCP 工具的桥接组件：Tunnel Gateway + Bridge Agent。</em></p>
 
 ---
 
-## English Overview
+## 项目简介
+- Tunnel Gateway（Go）：在云端维护 Agent 的 WSS 连接，默认入口 `/bridge/tunnel`，向后端暴露 `/internal/bridge/*` API（列出 Agent、获取工具列表、下发 INVOKE/CANCEL、SSE 事件流、查询 RESULT）。可选 Redis 支持跨实例路由与结果持久化。
+- Bridge Agent（Go）：运行在用户机器/服务器，聚合多个 MCP Server（命令行 stdio、HTTP Streamable/SSE），工具统一命名为 `{server}__{tool}`，内置 `bridge__echo` 便于端到端验证；支持日志背压、进度事件、断线重连与 RESULT 重传。
+- 配置文件（YAML）：浏览器或用户本地生成，不经云端存储；`bridge config validate/apply` 可校验与落盘。
+- Docker Compose 一键启动 Tunnel Gateway；CLI 通过 Go 构建或 GitHub Release 二进制使用。
 
-### 🌟 Highlights
-- 🔀 Multi-provider routing with weighted scheduling, health checks, and failover.
-- 🧭 OpenAI-compatible surface (`/v1/chat/completions`, `/v1/responses`, `/models`) with request adapters.
-- 🧠 Session stickiness via `X-Session-Id`, Redis-backed context and model caches.
-- 💳 Credits & billing hooks: per-user/provider request accounting, quotas, and history.
-- 📊 Metrics and dashboards: provider ranking, success rate trends, request history, user-scoped overview.
-- 🛡️ AuthN/Z + API key issuance, roles/permissions, security middleware, rate-limit, input validation.
-- 🧰 Dev UX: FastAPI backend + Next.js (App Router) admin UI, docker-compose one-click stack.
+## 仓库内容
+- `bridge/`：Go 源码与 CLI 入口（`bridge agent|gateway|config`）。
+- `docker-compose.develop.yml` / `docker-compose.images.yml`：网关本地构建版 / 预构建镜像编排。
+- `docs/bridge/design.md`、`docs/bridge/ai-higress-mcp-integration.md`：架构与与 AI-Higress 集成说明。
+- `docs/api/bridge.md`：Web/后端对 Tunnel Gateway 的 API 约定。
+- `scripts/build-bridge-dist.sh`：多平台 CLI 打包脚本。
 
-<p align="center">
-  <img src="docs/images/architecture.svg" alt="Architecture diagram" width="100%" />
-</p>
+## 快速开始
 
-### 📸 Screenshots
+### 1) 启动 Tunnel Gateway（Docker Compose）
+前置：Docker 与 docker compose。
 
-<p align="center">
-  <img src="docs/images/overview.png" alt="Dashboard overview" width="100%" />
-</p>
-
-<p align="center">
-  <img src="docs/images/provider-overview.png" alt="Provider overview" width="100%" />
-</p>
-
-### 🧩 Feature Matrix
-- Gateway & API: OpenAI-compatible chat/responses/models; SSE & non-streaming; context store.
-- Providers: public & private provider registration, provider presets, logical models, weighted routing, submission & approval flow.
-- Routing & control: routing rules, failover/backoff, health metrics, cache invalidation.
-- Identity & access: JWT login, API keys, role/permission management, user profile & avatar.
-- Credits & billing: credit balance and transaction history, per-user/provider metrics.
-- Observability: user/provider metrics, success-rate trends, request history, audit-friendly session snippets.
-- Admin & ops: system config, notifications, provider review, gateway status checks.
-
-### 🚀 Quickstart (Backend)
-1) Clone & enter:
-```bash
-git clone https://github.com/MarshallEriksen-Neura/AI-Higress-Gateway.git
-cd AI-Higress-Gateway
-```
-2) Python 3.12 env:
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e backend/
-```
-3) Start Postgres + Redis (Docker):
 ```bash
 cp .env.example .env
-docker compose -f docker-compose.develop.yml --env-file .env up -d postgres redis
+# 填写 SECRET_KEY（用于验证 Agent Token），可选 BRIDGE_GATEWAY_INTERNAL_TOKEN（保护 /internal/bridge/*）。
+
+# 本地构建网关镜像并启动
+docker compose -f docker-compose.develop.yml --env-file .env up -d
+
+# 或直接使用已发布镜像
+IMAGE_TAG=latest docker compose -f docker-compose.images.yml --env-file .env up -d
 ```
-4) Run API gateway (dev):
+
+默认监听 `http://127.0.0.1:8088`，隧道路径 `/bridge/tunnel`，内部 HTTP API 在 `/internal/bridge/*`。
+
+### 2) 准备 Bridge Agent 配置
+前置：Go 1.23+（或下载 Release 二进制）。
+
+创建 `config.yaml`（可放在 `~/.ai-bridge/config.yaml`，或项目根的 `.ai-bridge/config.yaml`，也可通过 `--config` 显式指定）：
+
+```yaml
+version: v1
+server:
+  # Tunnel Gateway 的 WS 地址（与 docker compose 暴露一致）
+  url: ws://127.0.0.1:8088/bridge/tunnel
+  # 可选：Agent Token（若网关启用了 --agent-token-secret，则必须设置）
+  token: ""
+  reconnect_initial: 1s
+  reconnect_max: 60s
+
+agent:
+  id: my-agent
+  label: dev-laptop
+  # CHUNK 日志缓冲与单帧大小（字节）
+  chunk_buffer_bytes: 4194304
+  chunk_max_frame_bytes: 16384
+
+mcp_servers:
+  # 本地 stdio MCP Server 示例
+  - name: filesystem
+    command: python3
+    args: ["-m", "mcp.server.filesystem"]
+    env:
+      MCP_FILESYSTEM_ROOT: /Users/me
+
+  # 远程 Streamable/SSE MCP Server 示例
+  - name: prompts
+    url: https://example.com/mcp
+    type: auto            # auto|streamable|http|sse|legacy_sse
+    headers:
+      Authorization: Bearer sk-xxxxx
+```
+
+校验与落盘：
+
 ```bash
-cd backend
-apiproxy  # or: uvicorn main:app --reload
-```
+# 检查配置
+bridge config validate --file ./config.yaml
 
-### 🖥️ Quickstart (Frontend)
-```bash
-cd frontend
-bun install   # or pnpm / npm
-bun dev       # starts Next.js dashboard
-```
-Env (frontend) is in `frontend/.env.example` (`NEXT_PUBLIC_API_BASE_URL` → backend URL).
-
-### ⚙️ Configuration
-- Main settings in `backend/app/settings.py`; prefer env vars.
-- Generate `SECRET_KEY` via system API `POST /system/secret-key/generate` and put into `.env`.
-- Redis/PostgreSQL URLs are read from `.env`; see sample values in the repo.
-- Optional: Celery broker/result can reuse Redis; see `.env` sample keys.
-- Example env keys:
-  - `REDIS_URL`, `REDIS_PASSWORD`
-  - `DATABASE_URL` (postgresql+psycopg)
-  - `SECRET_KEY`
-  - `LOG_LEVEL` (default INFO)
-  - `AUTO_APPLY_DB_MIGRATIONS` (default true) + `ENABLE_AUTO_MIGRATION=true` (explicit opt-in to actually run migrations)
-
-### 🧪 Testing (backend)
-We use `pytest` and `pytest-asyncio`. Run locally (AI agent will not run tests for you):
-```bash
-cd backend
-pytest
-```
-
-### 🐳 Docker Compose (dev vs deploy)
-- Dev/local tryout (images):  
-  `IMAGE_TAG=latest docker compose -f docker-compose.develop.yml --env-file .env up -d`
-- Deploy (images): use `docker-compose-deploy.yml` + your `.env`/`.env.deploy`, with prebuilt image `marshalleriksen/apiproxy-api:<tag>` (see GitHub Actions workflow `Publish Backend Image`). Run:
-```bash
-IMAGE_TAG=latest docker compose -f docker-compose-deploy.yml --env-file .env up -d
-```
-Alembic migrations auto-run when `AUTO_APPLY_DB_MIGRATIONS=true` and `ENABLE_AUTO_MIGRATION=true` (see `.env.example`); existing DBs should already have `alembic_version.version_num` widened to 128.
-
-### 🗺️ API Surface (high-level)
-- OpenAI-compatible gateway: `/v1/chat/completions`, `/v1/responses`, `/models`.
-- Management & ops: providers, logical models, routing rules, sessions, metrics, credits, auth, notifications, users & roles, API keys, private provider submissions, gateway/system config.
-
-### 📂 Project Layout
-- `backend/`: FastAPI gateway (`main.py` entrypoint, core logic in `app/`).
-- `frontend/`: Next.js dashboard (App Router + Tailwind + shadcn/ui).
-- `docs/`: Design/API notes; keep API behavior in sync (`docs/api/`).
-- `scripts/`: Helper scripts (model listing, key ops, etc.).
-- `tests/`: Pytest suite (sync + async).
-- `docker-compose.develop.yml`: Dev/local stack (prebuilt backend image + Postgres/Redis + optional frontend).
-- `docker-compose-deploy.yml`: Deploy stack (prebuilt backend image + Postgres/Redis).
-- `docker-compose.images.yml`: Image-only backend stack (no frontend).
-
-### 📚 Documentation
-- API docs: `docs/api/`
-- Backend design: `docs/backend/`
-- Frontend design: `docs/fronted/`
-- Bridge / MCP: `docs/bridge/design.md` + `specs/004-mcp-bridge/quickstart.md` + `docs/api/bridge.md`
-- Screenshots/assets: `docs/images/`
-
-### 🧱 Tech Stack & Deps
-- Python 3.12, FastAPI, SQLAlchemy, PostgreSQL, Redis (context/cache), Celery (optional async tasks).
-- Frontend: Next.js (App Router), Tailwind CSS, shadcn/ui, SWR data layer.
-- Bridge (Go): Agent + Tunnel Gateway for MCP tool execution.
-
-### 🔌 Bridge / MCP (Quick usage)
-Bridge lets the Web app call MCP tools running on user machines/servers via a reverse WSS tunnel (browser never connects to localhost).
-
-0) Install Bridge CLI (one-liner):
-```bash
-curl -fsSL https://raw.githubusercontent.com/MarshallEriksen-Neura/AI-Higress-Gateway/master/scripts/install-bridge.sh | bash
-# 默认会自动获取最新 GitHub Release。若需指定版本/分支：
-# VERSION=bridge-v0.1.2 curl -fsSL https://raw.githubusercontent.com/MarshallEriksen-Neura/AI-Higress-Gateway/master/scripts/install-bridge.sh | bash
-# REF=develop curl -fsSL https://raw.githubusercontent.com/MarshallEriksen-Neura/AI-Higress-Gateway/master/scripts/install-bridge.sh | bash
-```
-Windows (PowerShell):
-```powershell
-irm https://raw.githubusercontent.com/MarshallEriksen-Neura/AI-Higress-Gateway/master/scripts/install-bridge.ps1 | iex
-```
-
-1) Start Tunnel Gateway (cloud):
-```bash
-cd bridge
-go run ./cmd/bridge gateway serve --listen :8088 --agent-token-secret "$SECRET_KEY"
-```
-2) Configure backend to reach the gateway:
-- `BRIDGE_GATEWAY_URL=http://127.0.0.1:8088`
-- `BRIDGE_GATEWAY_INTERNAL_TOKEN` (optional; must match `--internal-token` if you set it)
-- `SECRET_KEY` (used to sign Bridge Agent auth tokens; use the same value as gateway `--agent-token-secret`)
-3) In the dashboard: open `/dashboard/bridge` → Config tab, generate `config.yaml` (includes server URL + token).
-4) On the user machine/server: run the agent:
-```bash
-bridge agent start
-```
-Config discovery order:
-- `--config <file>` if set
-- project config: `<repo>/.ai-bridge/config.yaml` (found by walking up until `.git`)
-- fallback: `~/.ai-bridge/config.yaml`
-
-Optional: apply the downloaded config to the default location:
-```bash
+# 写入默认路径 (~/.ai-bridge/config.yaml)，方便后续不带 --config 运行
 bridge config apply --file ./config.yaml
-bridge config validate
 ```
 
-Remote MCP servers (optional): `mcp_servers` supports command (stdio) and remote endpoints via `type: streamable|sse|auto` + `url` + optional `headers`.
-5) In Chat: select `agent_id` and the backend will inject tools into the model automatically.
-
-Local MCP server mode (for Claude Desktop/Cursor via stdio):
+### 3) 运行 Agent
 ```bash
-bridge agent serve-mcp --config ~/.ai-bridge/config.yaml
+# 连接云端 Tunnel Gateway，聚合 MCP 并上报工具列表
+bridge agent start --config ./config.yaml
+
+# 仅作为本地 MCP Server 聚合器（不走云端隧道，可供 Claude/Cursor 直接接入）
+bridge agent serve-mcp --config ./config.yaml
 ```
 
-Build/release Bridge binaries:
-- Local: `make build-bridge-dist` (outputs `dist/bridge/*`)
-- GitHub Release automation: push a tag like `bridge-v0.1.0` (see `.github/workflows/bridge-release.yml`)
+连接成功后，后端可通过 `/internal/bridge/invoke` 调用命名空间工具（包含内置 `bridge__echo`），通过 `/internal/bridge/tool-events` SSE 订阅状态/日志/结果。
 
-### 🤝 Contributing
-- Follow PEP 8, type hints, snake_case; keep commits focused.
-- Add/update tests with new endpoints, caching rules, or context behaviors.
-- Update `docs/api/` when changing API surface, auth, or error codes.
-- Example commit style: `添加模型缓存错误处理`.
+## 配置要点
+- 配置查找顺序：`--config` > `<当前目录向上查找>/.ai-bridge/config.yaml` > `~/.ai-bridge/config.yaml`。
+- `server.url` 必填（WS 地址）；`server.token` 仅在网关启用 `--agent-token-secret` 时要求填写。
+- `mcp_servers[*].command` 用于本地 stdio/子进程 MCP；`mcp_servers[*].url` 用于远程 HTTP/Streamable MCP，`type` 支持 `auto|streamable|http|sse|legacy_sse`。
+- 日志背压：`agent.chunk_buffer_bytes` 控制在内存中队列的最大字节数，超限会丢弃并在 CHUNK 中上报 `dropped_bytes/dropped_lines`；`agent.chunk_max_frame_bytes` 控制单帧大小。
 
-### 📜 License
-MIT
+## 构建与发布
+- 构建多平台 CLI 二进制：
+  ```bash
+  bash scripts/build-bridge-dist.sh --version bridge-v0.1.0
+  ```
+- 构建/推送网关镜像（手动）：
+  ```bash
+  docker build -f bridge/Dockerfile.gateway -t mcpproxy-gateway:dev ./bridge
+  ```
+  GitHub Actions 工作流 `bridge-gateway-docker-publish.yml` 会在 push/tag 时自动构建并推送 `marshalleriksen/mcpproxy-gateway:<tag>`。
+- Release 标签 `bridge-v*` 会触发 CLI 产物构建与发布（`bridge-release.yml`）。
 
----
-
-## 中文概览
-
-### 📖 项目简介
-
-**AI 终网关 (AI Ethereals Gateway)** 是一个企业级的 AI API 网关和管理平台，为开发者提供统一、可靠、高效的 AI 模型访问服务。
-
-#### 核心价值
-
-- **统一接入** - 集成 OpenAI、Anthropic、Google Gemini、Azure OpenAI 等主流 AI 服务提供商
-- **智能路由** - 基于成本、性能、可用性自动选择最优模型，支持加权负载均衡
-- **成本优化** - 实时追踪 API 使用成本，灵活的积分和配额系统
-- **高可用性** - 多 API Key 轮询、自动故障转移、健康检查机制
-- **企业级管理** - 完整的用户权限体系、团队协作、使用监控和审计
-- **开发友好** - OpenAI 兼容接口，无缝迁移现有应用
-
-#### 适用场景
-
-✅ **AI 应用开发** - 快速集成多个 AI 模型，无需关心底层提供商差异  
-✅ **成本控制** - 智能选择性价比最优的模型，降低 AI 服务成本  
-✅ **企业部署** - 统一管理团队的 AI API 使用，支持私有模型接入  
-✅ **服务稳定性** - 多 Key 轮询和故障转移，保障业务连续性  
-✅ **合规审计** - 完整的请求日志和会话追踪，满足企业合规要求
-
-### 🌟 核心亮点
-- 🔀 多提供商路由与权重调度，健康探测 + 故障切换。
-- 🧭 OpenAI 兼容接口（`/v1/chat/completions`, `/v1/responses`, `/models`），内置请求适配器。
-- 🧠 `X-Session-Id` 会话粘滞，Redis 承载上下文与模型缓存。
-- 💳 积分与计费：用户/Provider 维度的请求计量、额度与交易历史。
-- 📊 指标与看板：Provider 排行、成功率趋势、请求历史、用户维度概览。
-- 🛡️ 一站式安全：鉴权、API Key 发行、角色/权限、中间件安全校验、限流。
-- 🧰 研发友好：FastAPI 后端 + Next.js 管理台（App Router + Tailwind + shadcn/ui），docker-compose 一键本地栈。
-
-<p align="center">
-  <img src="docs/images/overview.png" alt="仪表盘截图" width="820" />
-</p>
-
-<p align="center">
-  <img src="docs/images/provider-overview.png" alt="Provider 管理截图" width="820" />
-</p>
-
-### 🧩 功能矩阵
-- 网关与 API：OpenAI 兼容（Chat/Responses/Models）、SSE/非流、上下文存储。
-- Provider：公共/私有 Provider 注册，预设模板，逻辑模型映射，权重路由，提交与审核流程。
-- 路由与控制：路由规则、故障切换/回退、健康探测、缓存失效。
-- 身份与访问：JWT 登录、API Key、角色/权限、用户资料与头像。
-- 积分与计费：余额/消耗/交易历史，用户 & Provider 维度指标。
-- 可观测性：用户/Provider 指标、成功率趋势、请求历史、会话审计片段。
-- 运维与管理：系统配置、通知、Provider 审核、网关健康检查。
-
-### 🚀 快速开始（Docker 镜像，推荐新手）
-1) 准备环境变量：
-```bash
-cp .env.example .env
-# 按需修改 .env（尤其是数据库/Redis 密码、SECRET_KEY、OAuth 回调等）
-```
-2) 启动开发栈（后端镜像 + PostgreSQL + Redis，可选前端容器）：
-```bash
-IMAGE_TAG=latest docker compose -f docker-compose.develop.yml --env-file .env up -d
-```
-3) 访问：
-- 后端 API: http://127.0.0.1:8000
-- 前端管理台（启用 frontend 服务时）: http://127.0.0.1:3000
-
-### 🚀 快速开始（后端源码开发）
-1) 克隆并进入目录：
-```bash
-git clone https://github.com/MarshallEriksen-Neura/AI-Higress-Gateway.git
-cd AI-Higress-Gateway
-```
-2) 创建 Python 3.12 虚拟环境并安装：
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e backend/
-```
-3) 启动 PostgreSQL + Redis（Docker）：
-```bash
-docker compose -f docker-compose.develop.yml --env-file .env up -d postgres redis
-```
-4) 开发模式运行网关：
-```bash
-cd backend
-uv run main.py  # 或 uvicorn main:app --reload
-```
-
-### 🖥️ 快速开始（前端）
-```bash
-# 1. 同步环境变量（从根目录 .env 自动生成前端配置）
-bash scripts/sync-frontend-env.sh
-
-# 2. 安装依赖并启动
-cd frontend
-bun install   # 或 pnpm / npm
-bun dev       # 启动 Next.js 管理台
-```
-
-**环境变量说明**:
-- 前后端共享根目录 `.env` 文件
-- 运行 `scripts/sync-frontend-env.sh` 自动生成 `frontend/.env.local`
-- 脚本会从 `CORS_ALLOW_ORIGINS` 推断 API 地址
-- 详见 [环境配置文档](docs/development/environment-setup.md)
-
-### ⚙️ 配置要点
-- 核心配置在 `backend/app/settings.py`，推荐使用环境变量。
-- 通过系统 API `POST /system/secret-key/generate` 生成 `SECRET_KEY` 写入 `.env`，避免提交真实密钥。
-- Redis/PostgreSQL 连接信息从 `.env` 读取，可按需调整。
-- Celery 可复用 Redis 作为 broker/result（参考 `.env` 示例）。
-- 常用环境变量：
-  - `REDIS_URL`, `REDIS_PASSWORD`
-  - `DATABASE_URL`（postgresql+psycopg）
-  - `SECRET_KEY`
-  - `LOG_LEVEL`（默认 INFO）
-  - `AUTO_APPLY_DB_MIGRATIONS`（默认 true）+ `ENABLE_AUTO_MIGRATION=true`（显式开启实际迁移）
-  - `ENABLE_CREDIT_CHECK`（启用网关层积分不足拦截）
-  - `ENABLE_STREAMING_PRECHARGE`, `STREAMING_MIN_TOKENS`（流式请求预扣开关与估算参数）
-
-### 🧪 测试（后端）
-使用 `pytest` / `pytest-asyncio`：
-```bash
-cd backend
-pytest
-```
-AI Agent 不会代跑测试，请本地执行并关注结果。
-
-### 🐳 容器化
-- 开发/本地试用（镜像模式）：  
-  `IMAGE_TAG=latest docker compose -f docker-compose.develop.yml --env-file .env up -d`
-- 生产部署（镜像模式）：  
-  `IMAGE_TAG=latest docker compose -f docker-compose-deploy.yml --env-file .env up -d`
-
-生产发布建议在 CI 先执行 `alembic upgrade head`，并结合外部 Redis、监控与日志。
-
-### 📂 仓库结构
-- `backend/`：FastAPI 后端（入口 `main.py`，业务在 `app/`）。
-- `frontend/`：Next.js 管理与监控 UI（App Router + Tailwind + shadcn/ui）。
-- `docs/`：设计与 API 文档（修改接口时同步更新 `docs/api/`）。
-- `scripts/`：脚本工具（模型检查、批量任务、密钥生成示例等）。
-- `tests/`：pytest 测试套件（含异步用例）。
-- `docker-compose.develop.yml`：开发/本地试用编排（后端镜像 + PostgreSQL/Redis + 可选前端）。
-- `docker-compose-deploy.yml`：生产部署编排（仅后端镜像 + PostgreSQL/Redis）。
-- `docker-compose.images.yml`：纯镜像后端编排（不含前端，可用于快速试跑）。
-
-### 📚 文档与规范
-- API 文档：`docs/api/`
-- 后端设计：`docs/backend/`
-- 前端设计：`docs/fronted/`
-- UI 视觉规范：`ui-prompt.md`
-- 前端文案与 i18n：`frontend/lib/i18n/`
-- 设计/截图资源：`docs/images/`
-
-### 🤝 贡献指南
-- 遵循 PEP 8 与类型注解；函数/变量 snake_case，类 PascalCase。
-- 每次新增接口/缓存/上下文逻辑都应补测试。
-- 涉及 API 行为、鉴权或错误码的改动需同步更新 `docs/api/`。
-- 提交信息保持简洁，如 `添加模型缓存错误处理`。
-
-### 📜 许可证
-MIT
+## 相关文档
+- 架构设计与集成：`docs/bridge/design.md`，`docs/bridge/ai-higress-mcp-integration.md`
+- API 说明：`docs/api/bridge.md`
+- Redis/HA 流程图：`docs/images/bridge-token-flow.svg`
