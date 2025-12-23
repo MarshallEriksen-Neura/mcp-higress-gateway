@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/logo.svg" alt="AI Bridge logo" width="420" />
+  <img src="docs/images/logo.png" alt="AI Bridge logo" width="420" />
 </p>
 
 <h1 align="center">AI Bridge · MCP 隧道网关</h1>
