@@ -36,6 +36,7 @@ func NewGatewayCmd() *cobra.Command {
 func newGatewayServeCmd() *cobra.Command {
 	var listen string
 	var tunnelPath string
+	var tunnelReadLimitBytes int64
 	var internalToken string
 	var agentTokenSecret string
 	var gatewayID string
@@ -52,9 +53,17 @@ func newGatewayServeCmd() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
+			if tunnelReadLimitBytes == 0 || tunnelReadLimitBytes < -1 {
+				return errors.New("tunnel-read-limit-bytes must be -1 or > 0")
+			}
+			if tunnelReadLimitBytes > 0 && tunnelReadLimitBytes < 1024 {
+				return errors.New("tunnel-read-limit-bytes must be -1 or >= 1024")
+			}
+
 			server := newGatewayServer(gatewayOptions{
 				ListenAddr:           listen,
 				TunnelPath:           tunnelPath,
+				TunnelReadLimitBytes: tunnelReadLimitBytes,
 				InternalToken:        internalToken,
 				AgentTokenSecret:     agentTokenSecret,
 				GatewayID:            gatewayID,
@@ -69,6 +78,7 @@ func newGatewayServeCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&listen, "listen", ":8088", "listen address")
 	c.Flags().StringVar(&tunnelPath, "tunnel-path", "/bridge/tunnel", "websocket tunnel path")
+	c.Flags().Int64Var(&tunnelReadLimitBytes, "tunnel-read-limit-bytes", 512*1024, "max websocket message bytes to read (-1 disables; beware memory/DoS risk)")
 	c.Flags().StringVar(&internalToken, "internal-token", "", "shared token for internal HTTP APIs (optional)")
 	c.Flags().StringVar(&agentTokenSecret, "agent-token-secret", "", "shared secret to verify agent AUTH token (optional; if set, token is required)")
 	c.Flags().StringVar(&gatewayID, "gateway-id", "", "gateway instance id (default: auto)")
@@ -81,14 +91,15 @@ func newGatewayServeCmd() *cobra.Command {
 }
 
 type gatewayOptions struct {
-	ListenAddr       string
-	TunnelPath       string
-	InternalToken    string
-	AgentTokenSecret string
-	GatewayID        string
-	RedisURL         string
-	RedisKeyPrefix   string
-	RedisTTL         time.Duration
+	ListenAddr           string
+	TunnelPath           string
+	TunnelReadLimitBytes int64
+	InternalToken        string
+	AgentTokenSecret     string
+	GatewayID            string
+	RedisURL             string
+	RedisKeyPrefix       string
+	RedisTTL             time.Duration
 
 	RedisResultKeyPrefix string
 	RedisResultTTL       time.Duration
@@ -205,8 +216,7 @@ func (s *gatewayServer) handleTunnelWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	// Allow larger frames (tool list/result chunks) than the nhooyr default 32KiB.
-	conn.SetReadLimit(512 * 1024)
+	conn.SetReadLimit(s.opts.TunnelReadLimitBytes)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	tmpSessionID := "ws_" + uuid.NewString()

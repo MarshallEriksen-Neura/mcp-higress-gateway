@@ -209,8 +209,8 @@ func connectAndServe(ctx context.Context, cfg *config.Config, rt *agentRuntime) 
 	if err != nil {
 		return fmt.Errorf("dial tunnel: %w", err)
 	}
-	// Allow larger frames from gateway than the default 32KiB limit.
-	conn.SetReadLimit(512 * 1024)
+	// Default in config is 512KiB; set to -1 to disable.
+	conn.SetReadLimit(cfg.Server.WSReadLimitBytes)
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	session := &agentSession{

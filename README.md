@@ -52,6 +52,8 @@ server:
   token: ""
   reconnect_initial: 1s
   reconnect_max: 60s
+  # 单条 WebSocket 消息最大读取字节数（默认 524288；设置为 -1 可关闭限制，注意内存/DoS 风险）
+  ws_read_limit_bytes: 524288
 
 agent:
   id: my-agent
@@ -100,6 +102,7 @@ bridge agent serve-mcp --config ./config.yaml
 ## 配置要点
 - 配置查找顺序：`--config` > `<当前目录向上查找>/.ai-bridge/config.yaml` > `~/.ai-bridge/config.yaml`。
 - `server.url` 必填（WS 地址）；`server.token` 仅在网关启用 `--agent-token-secret` 时要求填写。
+- 大结果/长工具列表：可调整 `server.ws_read_limit_bytes`（Agent 侧）或网关启动参数 `--tunnel-read-limit-bytes`；设置为 `-1` 可关闭限制（不推荐）。
 - `mcp_servers[*].command` 用于本地 stdio/子进程 MCP；`mcp_servers[*].url` 用于远程 HTTP/Streamable MCP，`type` 支持 `auto|streamable|http|sse|legacy_sse`。
 - 日志背压：`agent.chunk_buffer_bytes` 控制在内存中队列的最大字节数，超限会丢弃并在 CHUNK 中上报 `dropped_bytes/dropped_lines`；`agent.chunk_max_frame_bytes` 控制单帧大小。
 

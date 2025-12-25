@@ -25,6 +25,9 @@ type ServerConfig struct {
 	Token            string        `mapstructure:"token"`
 	ReconnectInitial time.Duration `mapstructure:"reconnect_initial"`
 	ReconnectMax     time.Duration `mapstructure:"reconnect_max"`
+	// WSReadLimitBytes sets the max number of bytes to read for a single WebSocket message.
+	// Set to -1 to disable the limit (not recommended).
+	WSReadLimitBytes int64 `mapstructure:"ws_read_limit_bytes"`
 }
 
 type AgentConfig struct {
@@ -115,6 +118,7 @@ func Load(opts LoadOptions) (*Config, error) {
 
 	v.SetDefault("server.reconnect_initial", "1s")
 	v.SetDefault("server.reconnect_max", "60s")
+	v.SetDefault("server.ws_read_limit_bytes", 512*1024)
 	v.SetDefault("agent.chunk_buffer_bytes", 4*1024*1024)
 	v.SetDefault("agent.chunk_max_frame_bytes", 16*1024)
 
@@ -147,6 +151,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.ReconnectMax < c.Server.ReconnectInitial {
 		return errors.New("server.reconnect_max must be >= server.reconnect_initial")
+	}
+	if c.Server.WSReadLimitBytes == 0 || c.Server.WSReadLimitBytes < -1 {
+		return errors.New("server.ws_read_limit_bytes must be -1 or > 0")
+	}
+	if c.Server.WSReadLimitBytes > 0 && c.Server.WSReadLimitBytes < 1024 {
+		return errors.New("server.ws_read_limit_bytes must be -1 or >= 1024")
 	}
 	if c.Agent.ChunkBufferBytes <= 0 {
 		return errors.New("agent.chunk_buffer_bytes must be > 0")
