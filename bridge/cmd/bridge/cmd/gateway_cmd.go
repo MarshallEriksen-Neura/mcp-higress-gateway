@@ -37,6 +37,8 @@ func newGatewayServeCmd() *cobra.Command {
 	var listen string
 	var tunnelPath string
 	var tunnelReadLimitBytes int64
+	var eventsSSEHeartbeat time.Duration
+	var eventsSSEBuffer int
 	var internalToken string
 	var agentTokenSecret string
 	var gatewayID string
@@ -59,11 +61,19 @@ func newGatewayServeCmd() *cobra.Command {
 			if tunnelReadLimitBytes > 0 && tunnelReadLimitBytes < 1024 {
 				return errors.New("tunnel-read-limit-bytes must be -1 or >= 1024")
 			}
+			if eventsSSEBuffer <= 0 {
+				return errors.New("events-sse-buffer must be > 0")
+			}
+			if eventsSSEHeartbeat < 0 {
+				return errors.New("events-sse-heartbeat must be >= 0")
+			}
 
 			server := newGatewayServer(gatewayOptions{
 				ListenAddr:           listen,
 				TunnelPath:           tunnelPath,
 				TunnelReadLimitBytes: tunnelReadLimitBytes,
+				EventsSSEHeartbeat:   eventsSSEHeartbeat,
+				EventsSSEBuffer:      eventsSSEBuffer,
 				InternalToken:        internalToken,
 				AgentTokenSecret:     agentTokenSecret,
 				GatewayID:            gatewayID,
@@ -79,6 +89,8 @@ func newGatewayServeCmd() *cobra.Command {
 	c.Flags().StringVar(&listen, "listen", ":8088", "listen address")
 	c.Flags().StringVar(&tunnelPath, "tunnel-path", "/bridge/tunnel", "websocket tunnel path")
 	c.Flags().Int64Var(&tunnelReadLimitBytes, "tunnel-read-limit-bytes", 512*1024, "max websocket message bytes to read (-1 disables; beware memory/DoS risk)")
+	c.Flags().DurationVar(&eventsSSEHeartbeat, "events-sse-heartbeat", 15*time.Second, "SSE heartbeat interval (0 disables)")
+	c.Flags().IntVar(&eventsSSEBuffer, "events-sse-buffer", 512, "SSE per-subscriber buffer size (messages)")
 	c.Flags().StringVar(&internalToken, "internal-token", "", "shared token for internal HTTP APIs (optional)")
 	c.Flags().StringVar(&agentTokenSecret, "agent-token-secret", "", "shared secret to verify agent AUTH token (optional; if set, token is required)")
 	c.Flags().StringVar(&gatewayID, "gateway-id", "", "gateway instance id (default: auto)")
@@ -94,6 +106,8 @@ type gatewayOptions struct {
 	ListenAddr           string
 	TunnelPath           string
 	TunnelReadLimitBytes int64
+	EventsSSEHeartbeat   time.Duration
+	EventsSSEBuffer      int
 	InternalToken        string
 	AgentTokenSecret     string
 	GatewayID            string
@@ -112,9 +126,15 @@ type gatewayServer struct {
 	agents map[string]*agentConn
 
 	subsMu sync.Mutex
-	subs   map[string]chan []byte
+	subs   map[string]*sseSub
 
 	redis *redis.Client
+}
+
+type sseSub struct {
+	agentID string
+	reqID   string
+	ch      chan []byte
 }
 
 type agentInfo struct {
@@ -146,6 +166,9 @@ func newGatewayServer(opts gatewayOptions) *gatewayServer {
 	if opts.GatewayID == "" {
 		opts.GatewayID = defaultGatewayID()
 	}
+	if opts.EventsSSEBuffer <= 0 {
+		opts.EventsSSEBuffer = 128
+	}
 	if opts.RedisTTL <= 0 {
 		opts.RedisTTL = 30 * time.Second
 	}
@@ -161,7 +184,7 @@ func newGatewayServer(opts gatewayOptions) *gatewayServer {
 	return &gatewayServer{
 		opts:   opts,
 		agents: make(map[string]*agentConn),
-		subs:   make(map[string]chan []byte),
+		subs:   make(map[string]*sseSub),
 	}
 }
 
@@ -675,15 +698,21 @@ func (s *gatewayServer) handleEventsSSE(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
+	// Hint for Nginx/Ingress to disable response buffering.
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	subID := uuid.NewString()
-	ch := make(chan []byte, 128)
+	sub := &sseSub{
+		agentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
+		reqID:   strings.TrimSpace(r.URL.Query().Get("req_id")),
+		ch:      make(chan []byte, s.opts.EventsSSEBuffer),
+	}
 
 	s.subsMu.Lock()
-	s.subs[subID] = ch
+	s.subs[subID] = sub
 	s.subsMu.Unlock()
 
 	defer func() {
@@ -692,41 +721,100 @@ func (s *gatewayServer) handleEventsSSE(w http.ResponseWriter, r *http.Request) 
 		s.subsMu.Unlock()
 	}()
 
-	io.WriteString(w, "event: ready\ndata: {}\n\n")
-	flusher.Flush()
+	if _, err := io.WriteString(w, "event: ready\ndata: {}\n\n"); err != nil {
+		return
+	}
+	flusher.Flush() // best-effort
 
 	ctx := r.Context()
+	var ticker *time.Ticker
+	if s.opts.EventsSSEHeartbeat > 0 {
+		ticker = time.NewTicker(s.opts.EventsSSEHeartbeat)
+		defer ticker.Stop()
+	}
+	var tickC <-chan time.Time
+	if ticker != nil {
+		tickC = ticker.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case msg := <-ch:
-			io.WriteString(w, "event: bridge\n")
-			io.WriteString(w, "data: ")
-			w.Write(msg)
-			io.WriteString(w, "\n\n")
+		case <-tickC:
+			// SSE comment heartbeat (ignored by clients), keeps idle connections alive across proxies.
+			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case msg := <-sub.ch:
+			if _, err := io.WriteString(w, "event: bridge\n"); err != nil {
+				return
+			}
+			if _, err := io.WriteString(w, "data: "); err != nil {
+				return
+			}
+			if _, err := w.Write(msg); err != nil {
+				return
+			}
+			if _, err := io.WriteString(w, "\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}
 }
 
 func (s *gatewayServer) publishEvent(env *protocol.Envelope) {
+	if env == nil {
+		return
+	}
 	b, err := json.Marshal(env)
 	if err != nil {
 		return
 	}
+	critical := env.Type != protocol.TypeChunk
+
 	s.subsMu.Lock()
-	for _, ch := range s.subs {
-		select {
-		case ch <- b:
-		default:
+	for _, sub := range s.subs {
+		if sub == nil {
+			continue
 		}
+		if sub.agentID != "" && env.AgentID != sub.agentID {
+			continue
+		}
+		if sub.reqID != "" && env.ReqID != sub.reqID {
+			continue
+		}
+		enqueueSSE(sub.ch, b, critical)
 	}
 	s.subsMu.Unlock()
 
 	s.publishRedisEvent(env, b)
 }
 
+func enqueueSSE(ch chan []byte, msg []byte, critical bool) {
+	if ch == nil || msg == nil {
+		return
+	}
+	select {
+	case ch <- msg:
+		return
+	default:
+	}
+	if !critical {
+		return
+	}
+	// Ensure critical messages (e.g. RESULT/ACK) have a chance to be delivered:
+	// drop one queued message and retry once.
+	select {
+	case <-ch:
+	default:
+	}
+	select {
+	case ch <- msg:
+	default:
+	}
+}
 func (s *gatewayServer) getAgent(agentID string) *agentConn {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

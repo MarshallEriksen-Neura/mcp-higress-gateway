@@ -128,6 +128,10 @@ Response:
 
 原样透传 Tunnel Gateway 的 Envelope SSE 流（调试用途）。
 
+说明：
+- Tunnel Gateway 的 SSE 支持可选过滤参数：`agent_id`、`req_id`（用于减少高并发/大量 CHUNK 日志时的丢消息概率）。
+- 网关默认会定期发送 SSE comment 心跳（`: ping`）以避免上游代理/网关在空闲时关闭连接。
+
 ### GET `/v1/bridge/tool-events`
 
 将 Envelope 流转换为前端约定的 tool_* SSE 事件。

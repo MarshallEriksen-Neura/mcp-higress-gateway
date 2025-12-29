@@ -103,6 +103,7 @@ bridge agent serve-mcp --config ./config.yaml
 - 配置查找顺序：`--config` > `<当前目录向上查找>/.ai-bridge/config.yaml` > `~/.ai-bridge/config.yaml`。
 - `server.url` 必填（WS 地址）；`server.token` 仅在网关启用 `--agent-token-secret` 时要求填写。
 - 大结果/长工具列表：可调整 `server.ws_read_limit_bytes`（Agent 侧）或网关启动参数 `--tunnel-read-limit-bytes`；设置为 `-1` 可关闭限制（不推荐）。
+- 慢模型/慢工具：建议后端/前端 SSE 订阅尽量按 `agent_id/req_id` 过滤（减少 CHUNK 洪峰导致的丢消息），必要时调大网关 `--events-sse-buffer`；网关默认每 15s 发送 SSE 心跳避免空闲断开（`--events-sse-heartbeat` 可调）。
 - `mcp_servers[*].command` 用于本地 stdio/子进程 MCP；`mcp_servers[*].url` 用于远程 HTTP/Streamable MCP，`type` 支持 `auto|streamable|http|sse|legacy_sse`。
 - 日志背压：`agent.chunk_buffer_bytes` 控制在内存中队列的最大字节数，超限会丢弃并在 CHUNK 中上报 `dropped_bytes/dropped_lines`；`agent.chunk_max_frame_bytes` 控制单帧大小。
 
